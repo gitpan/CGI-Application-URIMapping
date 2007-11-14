@@ -1,4 +1,7 @@
 Revision history for Perl extension CGI::Application::URIMapping.
 
+0.02  Wed Nov 14 14:30:00 2007
+	- automatic registration of runmodes and build_uri method
+
 0.01  Wed Nov 14 12:00:00 2007
 	- original version

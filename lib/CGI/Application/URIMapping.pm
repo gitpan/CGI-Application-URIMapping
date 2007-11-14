@@ -9,14 +9,15 @@ use URI::Escape;
 
 use base qw(CGI::Application::Dispatch);
 
-our $VERSION = 0.01;
+our $VERSION = 0.02;
 
 our %dispatch_table;
 our %uri_table;
+our %app_init_map;
 
 sub register {
     my ($self, @entries) = @_;
-    
+
     my $dispatch_table = ($dispatch_table{ref($self) || $self} ||= {});
     my $uri_table = ($uri_table{ref($self) || $self} ||= {});
     
@@ -72,7 +73,21 @@ sub register {
             });
         }
         $uri_table->{"$app/$rm"} = $build_uri;
-    }
+        unless ($app_init_map{$app}) {
+            $app_init_map{$app} = 1;
+            no strict 'refs';
+            $app->add_callback(
+                'init',
+                sub {
+                    my $app = shift;
+                    setup_runmodes($app, ref($self) || $self);
+                },
+            );
+            *{"${app}::build_uri"} = sub {
+                _app_build_uri($_[0], ref($self) || $self, $_[1]);
+            };
+        }
+    };
 }
 
 sub build_uri {
@@ -87,8 +102,6 @@ sub build_uri {
         $rm =~ s/[A-Z]/'_' . lc($&)/ego;
     }
     my $params = $args->{params} || [];
-    $params = [$params]
-        unless ref $params eq 'ARRAY';
     
     my $uri_table = ($uri_table{ref($self) || $self} ||= {});
     
@@ -107,6 +120,21 @@ sub build_uri {
             }
             ();
         });
+}
+
+sub _app_build_uri {
+    my ($app, $mapping, $args) = @_;
+    
+    $args = { params => $args }
+        if ref($args) eq 'ARRAY';
+    
+    build_uri(
+        $mapping,
+        {
+            app => ref $app || $app,
+            $args ? %$args : (),
+        },
+    );
 }
 
 sub run_modes_of {
@@ -135,6 +163,18 @@ sub dispatch_args {
             || $dispatch_table->{'*'}
                 || {},
     };
+}
+
+sub setup_runmodes {
+    my ($app, $mapping) = @_;
+    
+    my %cur = $app->run_modes();
+    
+    $app->run_modes([
+        grep {
+            ! exists $cur{$_}
+        } @{run_modes_of($mapping, ref $app)},
+    ]);
 }
 
 sub _build_default_uri_builder {
@@ -205,16 +245,9 @@ CGI::Application::URIMapping - A dispatcher and permalink builder
   use MyApp::Page1;
   use MyApp::Page2;
   
-  package MyApp;
+  package MyApp::Page1;
   
   use base qw/CGI::Application/;
-  
-  sub setup {
-    my $self = shift;
-    $self->run_modes(MyApp::URIMapping->run_modes_of(ref $self));
-  }
-
-  package MyApp::Page1;
   
   # registers subroutine ``page1'' for given path
   MyApp::URIMapping->register({
@@ -227,15 +260,11 @@ CGI::Application::URIMapping - A dispatcher and permalink builder
   }
   
   # build_uri, generates: http://host/page1/p-one?q1=q-one&q3=q-three
-  my $permalink = MyApp::URIMapping->build_uri({
-    app    => 'MyApp::Page1',
-    rm     => 'page1',
-    params => {
-      p1 => 'p-one',
-      q1 => 'q-one',
-      q3 => 'q-three',
-    },
-  });
+  my $permalink = MyApp::Page1->build_uri([{
+    p1 => 'p-one',
+    q1 => 'q-one',
+    q3 => 'q-three',
+  }]);
 
 =head1 DESCRIPTION
 
@@ -247,7 +276,7 @@ As can be seen in the synopsis, C<CGI::Application::URIMapping> is designed to b
 
 =head2 register
 
-The class method assigns a runmode to more than one paths.  There are various ways of calling the function.
+The class method assigns a runmode to more than one paths.  There are various ways of calling the function.  Runmodes of the registered packages are automatically setup, and C<Build_uri> method will be added to the packages.
 
   MyApp::URIMapping->register('path');
   MyApp::URIMapping->register('path/:required_param/:optional1?/:optional2?');
@@ -305,28 +334,23 @@ List of parameters to be marshallised when building a premalink.  The parameters
 
 =head2 build_uri
 
-Builds a permalink by given package name, runmode, and parameters.
+The function is automatically setup for the registered CGI::Application packages.
 
-  MyApp::URIMapping->build_uri({
-    app => 'MyApp::Page1',
-  });
-
-  MyApp::URIMapping->build_uri({
-    app => 'MyApp::Page1',
+  MyApp::Page1->build_uri();      # builds default URI for page1
+  
+  MyApp::Page1->build_uri({       # explicitly set runmode
     rm  => 'page1',
   });
   
-  MyApp::URIMapping->build_uri({
-    app      => 'MyApp::Page1',
-    params   => {
+  MyApp::Page1->build_uri({       # specify parameters and protocol
+    params   => [{
       p1 => 'p-one',
       n1 => 'n-one',
-    },
+    }],
     procotol => 'https',
   });
   
-  MyApp::URIMapping->build_uri({
-    app    => 'MyApp::Page1',
+  MyApp::Page1->build_uri({       # just override 'p1'
     params => [
       {
         p1 => 'p-one',
@@ -336,19 +360,19 @@ Builds a permalink by given package name, runmode, and parameters.
     ],
   });
 
-The function recognized the following attributes.
-
-=head3 app
-
-Package of the runmode.
+If called with a hash as the only argument, the function recognizes the following attributes.  If called with an array as the only argument, the array is considered as the params attribute.
 
 =head3 rm
 
 Name of the runmode.  If omitted, the last portion of the package name will be used uncamelized.
 
+=head3 protocol
+
+Protocol.
+
 =head3 params
 
-List of values to be filled in when building the URI.  The values can be supplied either as hashes, as a object that implements a C<param> method, or as an array of the two.  When an array is supplied, parameter values are search from the first entry to the last.
+An array of hashes or object containing values to be filled in when building the URI.  The parameters are searched from the begging of the array to the end, and the first-found value is used.  If the array element is an object, its C<param> method is called in order to obtain the variable.
 
 =head1 AUTHOR
 
