@@ -19,7 +19,7 @@ our %EXPORT_TAGS = (
 $EXPORT_TAGS{all} = [ uniq map { @$_ } values %EXPORT_TAGS ];
 our @EXPORT_OK = @{$EXPORT_TAGS{all}};
 
-our $VERSION = 0.03;
+our $VERSION = 0.04;
 
 use constant URI_IS_PERMALINK        => 0;
 use constant URI_UNKNOWN_PARAM       => 1;
@@ -106,7 +106,6 @@ sub register {
             *{"${app}::_uri_mapping"} = sub {
                 _uri_mapping_of($self_klass, $app, $_[1]);
             };
-            *{"${app}::all_param"} = \&all_param;
         }
     };
 }
@@ -123,19 +122,19 @@ sub dispatch_args {
     };
 }
 
-sub all_param {
+*CGI::Application::all_param = sub {
     my $app = shift;
     
     if (@_ == 1) {
         my $n = shift;
         my $v = $app->param($n);
         return $v
-            if defined $v;
+            if defined $v && $v ne '';
         return $app->query->param($n);
     }
     
     $app->param(@_);
-}
+};
 
 *CGI::Application::uri_mapping = sub {
     my $app = shift;
@@ -170,7 +169,8 @@ sub all_param {
     my $mapping = $app->uri_mapping($args->{rm} || undef);
     
     return
-        if $app->validate_uri($mapping, $app, $args->{extra} || []);
+        if _validate_uri($mapping, $app, $args->{extra} || [])
+            == URI_IS_PERMALINK;
     
     return $app->redirect(_build_uri(
         $mapping,
@@ -178,7 +178,6 @@ sub all_param {
             rm     => $args->{rm} || undef,
             params => [
                 $app,
-                $app->query,
             ],
         },
     ));
@@ -229,7 +228,13 @@ sub _build_uri {
                 if (ref $h eq 'HASH') {
                     return ($h->{$n}) if exists $h->{$n};
                 } else {
-                    my @v = $h->param($n);
+                    my @v;
+                    local $@ = undef;
+                    eval {
+                        @v = $h->all_param($n);
+                    };
+                    @v = $h->param($n)
+                        if $@;
                     return wantarray ? @v : $v[0]
                         if @v;
                 }
@@ -405,9 +410,7 @@ CGI::Application::URIMapping - A dispatcher and permalink builder
     my $self = shift;
     
     # if URI is not in permalink style, redirect
-    if (my $r = $self->normalize_uri) {
-      return $r;
-    }
+    return if $self->normalize_uri;
     
     ...
   }
