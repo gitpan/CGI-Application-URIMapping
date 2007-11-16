@@ -1,12 +1,12 @@
 #! /usr/bin/perl
 
-use Test::More tests => 13;
+use Test::More tests => 20;
 
 use strict;
 use warnings;
 
 BEGIN {
-    use_ok('CGI::Application::URIMapping');
+    use_ok('CGI::Application::URIMapping', ':all');
 };
 
 package T::URIMapping;
@@ -16,11 +16,6 @@ use base qw/CGI::Application::URIMapping/;
 package T::App;
 
 use base qw/CGI::Application/;
-
-sub setup {
-    my $self = shift;
-    $self->run_modes(T::URIMapping->run_modes_of(ref $self));
-}
 
 package T::App::Page1;
 
@@ -42,12 +37,19 @@ push @{$dt_expected->{'*'}},
     };
 
 is_deeply($dt_target, $dt_expected);
-is(T::URIMapping->build_uri({ app => 'T::App::Page1', rm => 'page1' }),
-   'http://localhost/page1');
+undef $@;
+eval {
+    is(ref(T::App::Page1->uri_mapping()), 'HASH');
+};
+ok(! $@);
 is(T::App::Page1->build_uri(),
    'http://localhost/page1');
 is(T::App::Page1->build_uri({ protocol => 'https' }),
    'https://localhost/page1');
+is(T::App::Page1->new(QUERY => CGI->new(''))->validate_uri(),
+   URI_IS_PERMALINK);
+is(T::App::Page1->new(QUERY => CGI->new('a='))->validate_uri(),
+   URI_UNKNOWN_PARAM);
 
 package T::App::Page2;
 
@@ -69,7 +71,7 @@ push @{$dt_expected->{'*'}},
 is_deeply($dt_target, $dt_expected);
 is(T::App::Page2->build_uri(),
    'https://localhost/page2');
-is(T::App::Page2->build_uri([ new CGI('n3=c&n2=b&n1=a') ]),
+is(T::App::Page2->build_uri([ CGI->new('n3=c&n2=b&n1=a') ]),
    'https://localhost/page2?n1=a&n2=b');
 is(T::App::Page2->build_uri([ { n1 => 'test&get' } ]),
    'https://localhost/page2?n1=test%26get');
@@ -80,7 +82,10 @@ use base qw/T::App/;
 
 T::URIMapping->register({
     path  => 'page3/:p1/:p2?/:p3?',
-    query => [ qw/q1 q2/ ],
+    query => [
+        qw/q1 q2/,
+        { name => 'q3', omit => 'd3' },
+    ],
 });
 
 package main;
@@ -100,3 +105,11 @@ is(T::App::Page3->build_uri([ { p1 => 'pone' } ]),
    'http://localhost/page3/pone');
 is(T::App::Page3->build_uri([ { p1 => 'pone', p2 => 'ptwo', q1 => 'abc', bogus => 'hoge' } ]),
    'http://localhost/page3/pone/ptwo?q1=abc');
+is(T::App::Page3->new(QUERY => CGI->new('q1=a&q2=b&q3=c'))->validate_uri(),
+   URI_IS_PERMALINK);
+is(T::App::Page3->new(QUERY => CGI->new('p2=a'))->validate_uri(),
+   URI_PATH_PARAM_IN_QUERY);
+is(T::App::Page3->new(QUERY => CGI->new('q3=c&q2=b&q1=a'))->validate_uri(),
+   URI_PARAM_NOT_IN_ORDER);
+is(T::App::Page3->new(QUERY => CGI->new('q1=a&q2=b&q3=d3'))->validate_uri(),
+   URI_OMITTABLE_PARAM);
